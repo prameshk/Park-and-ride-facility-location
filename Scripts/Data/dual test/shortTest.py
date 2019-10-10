@@ -7,7 +7,6 @@ Created on Sun May 28 21:09:46 2017
 import math
 import time
 import heapq
-import numpy as np
 from scipy import optimize
 
 inputLocation = "Data/"
@@ -32,11 +31,6 @@ class Node:
         self.inLinks = []
         self.label = float("inf")
         self.pred = ""
-        self.inDegree = 0
-        self.outDegree = 0
-        self.order = 0 # Topological order
-        self.wi = 0.0 # Weight of the node in Dial's algorithm
-        self.xi = 0.0 # Toal flow crossing through this node in Dial's algorithm
 
 
 class Link:
@@ -56,10 +50,7 @@ class Link:
         #self.linkType = float(_tmpIn[10])
         self.flow = 0.0
         self.cost =  float(_tmpIn[4]) #float(_tmpIn[4])*(1 + float(_tmpIn[5])*math.pow((float(_tmpIn[7])/float(_tmpIn[2])), float(_tmpIn[6])))
-        self.logLike = 0.0
-        self.reasonable = True # This is for Dial's stochastic loading
-        self.wij = 0.0 # Weight in the Dial's algorithm
-        self.xij = 0.0 # Total flow on the link for Dial's algorithm
+        self.linkLike = 0.0
 
 
 class Demand:
@@ -78,8 +69,8 @@ def readDemand():
             zoneSet[tmpIn[0]] = Zone([tmpIn[0]])
         if tmpIn[1] not in zoneSet:
             zoneSet[tmpIn[1]] = Zone([tmpIn[1]])
-        if tmpIn[1] not in zoneSet[tmpIn[0]].destList:
-            zoneSet[tmpIn[0]].destList.append(tmpIn[1])
+        if tmpIn[1] not in zoneSet[tmpIn[1]].destList:
+            zoneSet[tmpIn[1]].destList.append(tmpIn[0])
 
     inFile.close()
     print(len(tripSet), "OD pairs")
@@ -125,8 +116,6 @@ print("Reading the network data took", round(time.time() - readStart, 2), "secs"
 
 #############################################################################################################################
 #############################################################################################################################
-
-
 def DijkstraHeap(origin):
     '''
     Calcualtes shortest path from an origin to all other destinations.
@@ -153,39 +142,21 @@ def DijkstraHeap(origin):
                 nodeSet[newNode].pred = newPred
 
 def updateTravelTime():
-    '''
-    This method updates the travel time on the links with the current flow
-    '''
     for l in linkSet:
         linkSet[l].cost = linkSet[l].fft*(1 + linkSet[l].alpha*math.pow((linkSet[l].flow*1.0/linkSet[l].capacity), linkSet[l].beta))
 
-from scipy.optimize import fsolve
-def findAlpha(x_bar):
-    '''
-    This uses unconstrained optimization to calculate the optimal step size required
-    for Frank-Wolfe Algorithm
 
-    ******************* Need to be revised: Currently not working.**********************************************
-    '''
+def findAlpha(x_bar):
     alpha = 0.0
     def df(alpha):
         sum_derivative = 0 ## this line is the derivative of the objective function.
         for l in linkSet:
-            tmpFlow = (linkSet[l].flow + alpha*(x_bar[l] - linkSet[l].flow))
-            #print("tmpFlow", tmpFlow)
-            tmpCost = linkSet[l].fft*(1 + linkSet[l].alpha*math.pow((tmpFlow*1.0/linkSet[l].capacity), linkSet[l].beta))
-            sum_derivative = sum_derivative + (x_bar[l] - linkSet[l].flow)*tmpCost
+            sum_derivative = sum_derivative + (x_bar[l] - linkSet[l].flow)*BPR((linkSet[l].flow + alpha*(x_bar[l] - linkSet[l].flow)), linkSet[l].fft, linkSet[l].alpha, linkSet[l].beta, linkSet[l].capacity)
         return sum_derivative
-    print(df)
-    sol = fsolve(df, 0.1)
-    print(sol)
-    print(sol)
-    return sol #ax(0, min(1, sol.x[0]))
+    sol = optimize.root(df, 0)
+    return max(0, min(1, sol.x[0]))
 
 def tracePreds(dest):
-    '''
-    This method traverses predecessor nodes in order to create a shortest path
-    '''
     prevNode = nodeSet[dest].pred
     spLinks = []
     while nodeSet[dest].pred != "NA":
@@ -194,128 +165,31 @@ def tracePreds(dest):
         prevNode = nodeSet[dest].pred
     return spLinks
 
-
-
-
 def loadAON():
-    '''
-    This method produces auxiliary flows for all or nothing loading.
-    '''
     x_bar = {l: 0.0 for l in linkSet}
     SPTT = 0.0
     for r in originZones:
         DijkstraHeap(r)
         for s in zoneSet[r].destList:
-            try:
-                dem = tripSet[r, s].demand
-            except KeyError:
-                dem = 0.0
+            dem = tripSet[r, s].demand
             SPTT = SPTT + nodeSet[s].label * dem
             if r != s:
                 for spLink in tracePreds(s):
                     x_bar[spLink] = x_bar[spLink] + dem
     return SPTT, x_bar
 
-def findReasonableLinks():
-    for l in linkSet:
-        if nodeSet[l[1]].label > nodeSet[l[0]].label:
-            linkSet[l].reasonable = True
-        else:
-            linkSet[l].reasonable = False
 
-def computeLogLikelihood():
+def computeLinkLikelihood():
     '''
     This method computes link likelihood for the Dial's algorithm
     '''
-    for l in linkSet:
-        if linkSet[l].reasonable == True: # If reasonable link
-            linkSet[l].logLike = math.exp(nodeSet[l[1]].label - nodeSet[l[0]].label - linkSet[l].cost)
 
 
-def topologicalOrdering():
-    '''
-    * Assigns topological order to the nodes based on the inDegree of the node
-    * Note that it only considers reasonable links, otherwise graph will be acyclic
-    '''
-    for e in linkSet:
-        if linkSet[e].reasonable == True:
-                nodeSet[e[1]].inDegree = nodeSet[e[1]].inDegree + 1
-    order = 0
-    SEL = [k for k in nodeSet if nodeSet[k].inDegree == 0]
-    while SEL:
-        i = SEL.pop(0)
-        order = order + 1
-        nodeSet[i].order = order
-        for j in nodeSet[i].outLinks:
-            if linkSet[i, j].reasonable == True:
-                nodeSet[j].inDegree = nodeSet[j].inDegree - 1
-                if nodeSet[j].inDegree == 0:
-                    SEL.append(j)
-    if order < len(nodeSet):
-        print("the network has cycle(s)")
-
-def resetDialAttributes():
-    for n in nodeSet:
-        nodeSet[n].inDegree = 0
-        nodeSet[n].outDegree = 0
-        nodeSet[n].order = 0
-        nodeSet[n].wi = 0.0
-        nodeSet[n].xi = 0.0
-    for l in linkSet:
-        linkSet[l].logLike = 0.0
-        linkSet[l].reasonable = True
-        linkSet[l].wij = 0.0
-        linkSet[l].xij = 0.0
-
-
-
-def DialLoad():
-    '''
-    This method runs the Dial's algorithm and prepare a stochastic loading.
-    '''
-    resetDialAttributes()
-    x_bar = {l: 0.0 for l in linkSet}
+def dialLoad():
     for r in originZones:
         DijkstraHeap(r)
-        findReasonableLinks()
-        topologicalOrdering()
-        computeLogLikelihood()
 
-        '''
-        Assigning weights to nodes and links
-        '''
-        order = 1
-        while (order <= len(nodeSet)):
-            i = [k for k in nodeSet if nodeSet[k].order == order][0] # Node with order no equal to current order
-            if order == 1:
-                nodeSet[i].wi = 1.0
-            else:
-                nodeSet[i].wi = sum([linkSet[k, i].wij for k in nodeSet[i].inLinks if linkSet[k, i].reasonable == True])
-            for j in nodeSet[i].outLinks:
-                if linkSet[i, j].reasonable == True:
-                    linkSet[i, j].wij = nodeSet[i].wi*linkSet[i, j].logLike
-            order = order + 1
-        '''
-        Assigning load to nodes and links
-        '''
-        order = len(nodeSet) # The loading works in reverse direction
-        while (order >= 1):
-            j = [k for k in nodeSet if nodeSet[k].order == order][0]  # Node with order no equal to current order
-            try:
-                dem = tripSet[r, j].demand
-            except KeyError:
-                dem = 0.0
-            nodeSet[j].xj = dem + sum([linkSet[j, k].xij for k in nodeSet[j].outLinks if linkSet[j, k].reasonable == True])
-            for i in nodeSet[j].inLinks:
-                if linkSet[i, j].reasonable == True:
-                    linkSet[i, j].xij = nodeSet[j].xj * (linkSet[i, j].wij / nodeSet[j].wi)
-            order = order - 1
-        for l in linkSet:
-            if linkSet[l].reasonable == True:
-                x_bar[l] = x_bar[l] + linkSet[l].xij
-
-    return x_bar
-
+    pass
 
 
 def assignment(loading, algorithm, accuracy = 0.01, maxIter=100):
@@ -335,46 +209,64 @@ def assignment(loading, algorithm, accuracy = 0.01, maxIter=100):
             alpha = (1.0/it)
         elif algorithm == "FW":
             alpha = findAlpha(x_bar)
-            print(alpha, x_bar)
         else:
             print("Terminating the program.....")
             print("The solution algorithm ", algorithm, " does not exist!")
-        prevLinkFlow = np.array([linkSet[l].flow for l in linkSet])
         for l in linkSet:
             linkSet[l].flow = alpha*x_bar[l] + (1-alpha)*linkSet[l].flow
         updateTravelTime()
         if loading == "deterministic":
             SPTT, x_bar = loadAON()
-            TSTT = round(sum([linkSet[a].flow * linkSet[a].cost for a in linkSet]), 3)
-            SPTT = round(SPTT, 3)
-            gap = round(abs((TSTT / SPTT) - 1), 5)
-            # print(TSTT, SPTT, gap)
-            if it == 1:
-                gap = gap + float("inf")
         elif loading == "stochastic":
-            x_bar = DialLoad()
-            currentLinkFlow = np.array([linkSet[l].flow for l in linkSet])
-            change = (prevLinkFlow -currentLinkFlow)
-            if it < 3:
-                gap = gap + float("inf")
-            else:
-                gap = round(np.linalg.norm(np.divide(change, prevLinkFlow,  out=np.zeros_like(change), where=prevLinkFlow!=0)), 2)
-
+            SPTT, x_bar = loadAON()
         else:
             print("Terminating the program.....")
             print("The loading ", loading, " is unknown")
-
+        TSTT = round(sum([linkSet[a].flow*linkSet[a].cost for a in linkSet]), 3)
+        SPTT = round(SPTT, 3)
+        gap = round(abs((TSTT / SPTT) - 1), 5)
+        #print(TSTT, SPTT, gap)
+        if it == 1:
+            gap = gap  + float("inf")
         it = it + 1
         if it > maxIter:
-            print("The assignment did not converge with the desired gap and max iterations are reached")
+            print("The assignment did not converge with the desired gap")
             print("current gap ", gap)
             break
-    print("Assignment took", time.time() - startP, " seconds")
-    print("assignment converged in ", it, " iterations")
+    print("Assignment took", time.time() - startP)
+    return "assignment converged in ", it, " iterations"
 
 ###########################################################################################################################
 
 
 
-assignment("deterministic", "MSA", accuracy = 0.01, maxIter=10000)
-#assignment("stochastic", "MSA", accuracy = 0.01, maxIter=100)
+#assignment("deterministic", "MSA", accuracy = 0.01, maxIter=100)
+
+linkSet
+
+from gurobipy import *
+
+m = Model()
+
+decVars ={}
+
+constr ={}
+
+for i in linkSet:
+    decVars[i] = m.addVar(vtype=GRB.CONTINUOUS, name=str(i),  obj = linkSet[i].fft)
+
+m.update()
+constr['1'] = m.addConstr(quicksum([decVars[('1', k)] for k in nodeSet['1'].outLinks]) == 1)
+constr['24'] = m.addConstr(quicksum([decVars[(k, '24')] for k in nodeSet['24'].inLinks]) == 1)
+constr['100'] = m.addConstr(quicksum([decVars[('24', k)] for k in nodeSet['24'].outLinks]) == 0)
+constr['2400'] = m.addConstr(quicksum([decVars[(k, '1')] for k in nodeSet['1'].inLinks]) == 0)
+for i in nodeSet:
+    if i not in ['1', '24']:
+        constr[i] = m.addConstr(quicksum([decVars[(i, k)] for k in nodeSet[i].outLinks]) == quicksum([decVars[(k, i)] for k in nodeSet[i].inLinks]))
+
+
+m.update()
+obj = m.getObjective()
+m.setObjective(obj, sense=GRB.MINIMIZE)
+m.optimize()
+
