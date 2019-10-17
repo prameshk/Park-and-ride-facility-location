@@ -75,4 +75,3 @@ origin	dest	type	capacity	length	fft	alpha	beta	speedLimit
 24	13	Auto	5091.256152	4	4	0.15	4	0
 24	21	Auto	4885.357564	3	3	0.15	4	0
 24	23	Auto	5078.508436	2	2	0.15	4	0
-25	26	Transit	4924.790605	4	4	0.15	4	0
